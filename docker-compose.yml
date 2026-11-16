@@ -6,17 +6,36 @@ services:
     expose:
       - "9000"
 
+  # 候选（升级版）接收端：可模拟回执改字、慢读、断连
+  receiver-candidate:
+    build: ./candidate
+    environment:
+      PORT: "9000"
+      CONTROL_PORT: "9100"
+      MUTATE: "0"
+      SLOW_READ: "0"
+      SLOW_READ_MS: "150"
+      DISCONNECT: "0"
+    expose:
+      - "9000"
+      - "9100"
+
   proxy:
     build: ./proxy
     environment:
       LISTEN_HOST: 0.0.0.0
       LISTEN_PORT: "7000"        # TCP 延迟代理监听端口
-      TARGET_HOST: receiver      # 目标地址（可在网页上改）
+      TARGET_HOST: receiver      # 主目标地址（可在网页上改）
       TARGET_PORT: "9000"
       UP_DELAY_MS: "300"         # 上行延迟：客户端 -> 目标
       DOWN_DELAY_MS: "300"       # 下行延迟：目标 -> 客户端
+      COMPARE_ENABLED: "1"       # 默认开启旁路比对
+      CANDIDATE_HOST: receiver-candidate
+      CANDIDATE_PORT: "9000"
+      CANDIDATE_CONTROL_URL: http://receiver-candidate:9100
     ports:
       - "8000:8000"              # 网页 / API
       - "7000:7000"              # TCP 延迟代理（可直接对接设备/客户端）
     depends_on:
       - receiver
+      - receiver-candidate

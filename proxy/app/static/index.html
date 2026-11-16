@@ -3,44 +3,81 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TCP 延迟代理 · 慢链路复现</title>
+<title>TCP 延迟代理 · 旁路比对</title>
 <style>
-body { font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 24px auto; max-width: 1220px; color: #222; }
+body { font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 24px auto; max-width: 1480px; color: #222; padding: 0 12px; }
 h1 { font-size: 20px; margin-bottom: 4px; }
 h2 { font-size: 15px; margin: 0 0 10px; }
 .sub { color: #666; font-size: 13px; margin-bottom: 16px; }
 .card { border: 1px solid #ddd; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
 label { display: inline-block; width: 120px; font-size: 13px; }
 input { padding: 4px 6px; margin: 2px 0; font-size: 13px; }
+input[type=checkbox] { margin: 0 6px 0 0; vertical-align: middle; }
 button { padding: 6px 14px; cursor: pointer; font-size: 13px; }
+button:disabled { cursor: not-allowed; opacity: .55; }
 table { border-collapse: collapse; width: 100%; font-size: 12px; }
 th, td { border: 1px solid #e0e0e0; padding: 3px 6px; text-align: left; vertical-align: top; }
 th { background: #f5f5f5; white-space: nowrap; }
-.ok { color: #0a7d2c; } .err { color: #c00; }
+.ok { color: #0a7d2c; } .err { color: #c00; } .warn { color: #a46200; }
 .muted { color: #777; font-size: 12px; }
 pre { background: #f7f7f7; padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
-.pill { padding: 1px 8px; border-radius: 10px; font-size: 11px; white-space: nowrap; }
+.pill { padding: 1px 8px; border-radius: 10px; font-size: 11px; white-space: nowrap; display: inline-block; }
 .st-active { background: #e7f5ff; } .st-closed { background: #ebfbee; } .st-error { background: #fff5f5; }
+.cmp-match { background: #ebfbee; color: #0a7d2c; }
+.cmp-mismatch { background: #fff0f6; color: #b0005a; }
+.cmp-incomplete { background: #fff9db; color: #8a5a00; }
+.cmp-pending { background: #e7f5ff; color: #045a8d; }
+.cmp-disabled { background: #f1f3f5; color: #666; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
+.row2 { display: flex; gap: 20px; flex-wrap: wrap; }
+.row2 > div { flex: 1 1 420px; }
+.ctrl { border: 1px dashed #ccc; border-radius: 6px; padding: 8px 10px; margin-top: 8px; font-size: 13px; }
+.ctrl label { width: auto; margin-right: 14px; }
+.hint { color: #777; font-size: 12px; margin-top: 6px; line-height: 1.5; }
+.bar { background: #eee; border-radius: 4px; height: 6px; width: 100%; overflow: hidden; margin-top: 3px; }
+.bar > i { display: block; height: 100%; background: #4c9be8; }
 </style>
 </head>
 <body>
-<h1>TCP 延迟代理 <span class="muted">慢链路下“上传结束却收不到回执”复现工具</span></h1>
-<div class="sub">延迟自代理读到字节起算，连续数据流水发送（不按块累加等待）；每向应用缓冲 ≤ 64 KiB，满则暂停该向读取；单向 EOF 先冲刷待发字节再转发半关闭，反向继续到结束。</div>
+<h1>TCP 延迟代理 <span class="muted">旁路比对：同一次上传同时观察主端与候选端响应</span></h1>
+<div class="sub">客户端只收主端响应；上行复制给候选端（各连接沿用建立时配置）。旁路待发缓冲 ≤ 64 KiB，溢出即中止并标“不完整”；未中止时先发完上行再转发 EOF。主连接结束后最多等 5 秒。两端下行按字节数 + SHA-256 判一致，任一端异常不得判一致。</div>
 
 <div class="card">
-  <h2>代理配置</h2>
-  <div><label>监听地址</label><input id="listen_host" size="14"> : <input id="listen_port" type="number" style="width:90px"></div>
-  <div><label>目标地址</label><input id="target_host" size="14"> : <input id="target_port" type="number" style="width:90px"></div>
-  <div><label>上行延迟 (ms)</label><input id="up_delay_ms" type="number" min="0" style="width:110px"> <span class="muted">客户端 → 目标</span></div>
-  <div><label>下行延迟 (ms)</label><input id="down_delay_ms" type="number" min="0" style="width:110px"> <span class="muted">目标 → 客户端</span></div>
-  <div style="margin-top:8px"><button id="saveBtn">保存配置</button> <span id="cfgStatus"></span></div>
-  <div class="muted" style="margin-top:6px">每条连接沿用建立时的配置，新配置只影响之后建立的连接；修改监听地址/端口会重启监听器（已有连接不受影响）。</div>
+  <h2>代理配置 <span class="muted">（保存后仅对之后建立的连接生效）</span></h2>
+  <div class="row2">
+    <div>
+      <div><label>监听地址</label><input id="listen_host" size="16"> : <input id="listen_port" type="number" style="width:90px"></div>
+      <div><label>主目标地址</label><input id="target_host" size="16"> : <input id="target_port" type="number" style="width:90px"></div>
+      <div><label>上行延迟 (ms)</label><input id="up_delay_ms" type="number" min="0" style="width:110px"> <span class="muted">客户端 → 主目标</span></div>
+      <div><label>下行延迟 (ms)</label><input id="down_delay_ms" type="number" min="0" style="width:110px"> <span class="muted">主目标 → 客户端</span></div>
+    </div>
+    <div>
+      <div><label style="width:150px"><input type="checkbox" id="compare_enabled">启用旁路比对</label></div>
+      <div><label>候选地址</label><input id="candidate_host" size="16" placeholder="receiver-candidate"> : <input id="candidate_port" type="number" style="width:90px" placeholder="9000"></div>
+      <div style="margin-top:8px"><button id="saveBtn">保存配置</button> <span id="cfgStatus"></span></div>
+      <div class="hint">候选地址在连接建立时随配置一起快照；之后修改不影响已建立的连接。</div>
+    </div>
+  </div>
 </div>
 
 <div class="card">
-  <h2>上传试传（浏览器 → 本服务 → 经延迟代理 → 目标，读取回执）</h2>
+  <h2>候选端故障模拟 <span class="muted">（作用于候选接收端，仅影响旁路）</span></h2>
+  <div class="ctrl">
+    <label><input type="checkbox" id="c_mutate">回执改字（字节数不变，SHA-256 不同）</label>
+    <label><input type="checkbox" id="c_slow_read">慢读</label>
+    <label>每块延迟 <input id="c_slow_read_ms" type="number" min="0" style="width:80px"> ms</label>
+    <label><input type="checkbox" id="c_disconnect">收到首块后断连</label>
+    <button id="cApplyBtn">应用到候选端</button>
+    <span id="cStatus"></span>
+  </div>
+  <div class="hint">慢读/断连只会让旁路中止并标“不完整”，主链路的延迟、回执与半关闭语义保持不变。</div>
+</div>
+
+<div class="card">
+  <h2>上传试传 <span class="muted">浏览器 → 本服务 → 经延迟代理 → 主端；旁路同时发往候选端</span></h2>
   <input type="file" id="file"> <button id="upBtn">开始试传</button> <span id="upStatus"></span>
+  <div class="hint" id="upConn"></div>
   <pre id="upResult" style="display:none"></pre>
 </div>
 
@@ -59,15 +96,25 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmtNum = n => (n ?? 0).toLocaleString();
 const fmtTime = ts => ts ? new Date(ts * 1000).toLocaleTimeString() : "-";
+const fmtDur = (a, b) => (a && b) ? `${Math.max(0, b - a).toFixed(2)}s` : "-";
+
+const CMP_LABEL = {
+  disabled: "未启用", pending: "比对中", match: "一致",
+  mismatch: "不同", incomplete: "不完整",
+};
 
 async function loadConfig() {
   const r = await fetch("/api/config");
   const d = await r.json();
   const c = d.config;
-  for (const k of ["listen_host","listen_port","target_host","target_port","up_delay_ms","down_delay_ms"])
-    $(k).value = c[k];
+  for (const k of ["listen_host","listen_port","target_host","target_port","up_delay_ms","down_delay_ms",
+                   "candidate_host","candidate_port"])
+    $(k).value = c[k] ?? "";
+  $("compare_enabled").checked = !!c.compare_enabled;
   $("cfgStatus").innerHTML = d.listening
-    ? `<span class="ok">● 监听中 ${esc(c.listen_host)}:${c.listen_port} → ${esc(c.target_host)}:${c.target_port}</span>`
+    ? `<span class="ok">● 监听中 ${esc(c.listen_host)}:${c.listen_port} → ${esc(c.target_host)}:${c.target_port}` +
+      (c.compare_enabled ? `；旁路 → ${esc(c.candidate_host)}:${c.candidate_port}</span>`
+                         : `；旁路未启用</span>`)
     : `<span class="err">● 未监听：${esc(d.listen_error || "未启动")}</span>`;
 }
 
@@ -79,34 +126,110 @@ async function saveConfig() {
     target_port: +$("target_port").value,
     up_delay_ms: +$("up_delay_ms").value,
     down_delay_ms: +$("down_delay_ms").value,
+    compare_enabled: $("compare_enabled").checked,
+    candidate_host: $("candidate_host").value.trim(),
+    candidate_port: +$("candidate_port").value || 0,
   };
   $("cfgStatus").textContent = "保存中…";
   try {
     const r = await fetch("/api/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
     const d = await r.json();
-    if (!r.ok) throw new Error(JSON.stringify(d));
+    if (!r.ok) throw new Error((d.detail && JSON.stringify(d.detail)) || JSON.stringify(d));
     $("cfgStatus").innerHTML = d.listening
-      ? `<span class="ok">已保存，监听中 ${esc(d.config.listen_host)}:${d.config.listen_port} → ${esc(d.config.target_host)}:${d.config.target_port}</span>`
+      ? `<span class="ok">已保存，监听中 ${esc(d.config.listen_host)}:${d.config.listen_port}` +
+        (d.config.compare_enabled ? `；旁路 → ${esc(d.config.candidate_host)}:${d.config.candidate_port}</span>` : `；旁路未启用</span>`)
       : `<span class="err">已保存，但监听失败：${esc(d.listen_error)}</span>`;
+    loadConfig();
   } catch (e) {
     $("cfgStatus").innerHTML = `<span class="err">保存失败：${esc(e.message)}</span>`;
   }
 }
 
-const HEAD = `<tr><th>ID</th><th>状态</th><th>客户端</th><th>目标</th>` +
-  `<th>上行字节</th><th>下行字节</th><th>上行缓冲<br>当前/峰值</th><th>下行缓冲<br>当前/峰值</th>` +
-  `<th>延迟ms<br>上/下</th><th>回执（下行尾部）</th><th>开始</th><th>结束</th><th>错误</th></tr>`;
+async function loadCandidate() {
+  try {
+    const d = await (await fetch("/api/candidate")).json();
+    if (!d.ok) {
+      $("cStatus").innerHTML = `<span class="err">候选控制接口不可用：${esc(d.error)}</span>`;
+      return;
+    }
+    $("c_mutate").checked = !!d.mutate;
+    $("c_slow_read").checked = !!d.slow_read;
+    $("c_slow_read_ms").value = d.slow_read_ms;
+    $("c_disconnect").checked = !!d.disconnect;
+    $("cStatus").innerHTML = `<span class="ok">已连接候选控制接口</span>`;
+  } catch (e) {
+    $("cStatus").innerHTML = `<span class="err">候选控制接口请求失败：${esc(e.message)}</span>`;
+  }
+}
+
+async function applyCandidate() {
+  const body = {
+    mutate: $("c_mutate").checked,
+    slow_read: $("c_slow_read").checked,
+    slow_read_ms: +$("c_slow_read_ms").value || 0,
+    disconnect: $("c_disconnect").checked,
+  };
+  $("cApplyBtn").disabled = true;
+  try {
+    const r = await fetch("/api/candidate", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error((d.detail && JSON.stringify(d.detail)) || d.error || JSON.stringify(d));
+    $("cStatus").innerHTML = `<span class="ok">已应用：改字=${d.mutate ? "开" : "关"}，慢读=${d.slow_read ? d.slow_read_ms + "ms/块" : "关"}，断连=${d.disconnect ? "开" : "关"}</span>`;
+  } catch (e) {
+    $("cStatus").innerHTML = `<span class="err">应用失败：${esc(e.message)}</span>`;
+  } finally {
+    $("cApplyBtn").disabled = false;
+  }
+}
+
+function cmpPill(cmp) {
+  const st = cmp && cmp.status || "disabled";
+  return `<span class="pill cmp-${st}">${CMP_LABEL[st] || st}</span>` + (cmp && cmp.enabled ? "" : "");
+}
+
+function streamCell(s) {
+  if (!s) return `<span class="muted">-</span>`;
+  const flag = s.complete ? `<span class="ok">完整</span>` : `<span class="warn">${s.error ? "异常" : "进行中"}</span>`;
+  return `<div class="num">${fmtNum(s.bytes)} B</div>` +
+    `<div class="mono">${esc(s.sha256 || "-")}</div>` +
+    `<div>${flag}</div>` +
+    (s.error ? `<div class="err">${esc(s.error)}</div>` : "");
+}
+
+function compareCell(c) {
+  const cmp = c.compare;
+  if (!cmp || !cmp.enabled) {
+    return `<td colspan="5" class="muted">未启用旁路</td>`;
+  }
+  const prog = cmp.copied
+    ? Math.min(100, 100 * (cmp.up.bytes || 0) / cmp.copied).toFixed(1)
+    : "0.0";
+  const upState = cmp.up.queued > 0 ? "待发" : (cmp.status === "pending" ? "等待" : "已发完");
+  return `<td>${cmpPill(cmp)}</td>` +
+    `<td>${streamCell(cmp.main_down)}</td>` +
+    `<td>${streamCell(cmp.candidate_down)}</td>` +
+    `<td><div class="num">${fmtNum(cmp.up.bytes)} / ${fmtNum(cmp.copied)} B（待发 ${fmtNum(cmp.up.queued)}）</div>` +
+      `<div class="bar"><i style="width:${prog}%"></i></div>` +
+      `<div class="muted">${esc(upState)}；候选 ${esc(cmp.candidate || "-")}</div></td>` +
+    `<td class="err">${esc(cmp.reason || "")}</td>`;
+}
+
+const HEAD = `<tr><th>ID</th><th>状态</th><th>客户端</th><th>主目标</th>` +
+  `<th>上行字节<br>当前/峰值</th><th>下行字节</th>` +
+  `<th>延迟ms<br>上/下</th><th>主端回执（下行尾部）</th><th>开始</th><th>结束</th><th>主链路错误</th>` +
+  `<th>比对</th><th>主端下行<br>字节 / SHA-256</th><th>候选下行<br>字节 / SHA-256</th>` +
+  `<th>旁路上行<br>已发/已复制</th><th>比对失败原因</th></tr>`;
 
 function connRow(c) {
   const receipt = (c.receipt || "").slice(-160);
   return `<tr><td>${c.id}</td><td><span class="pill st-${c.state}">${c.state}</span></td>` +
     `<td>${esc(c.client)}</td><td>${esc(c.target)}</td>` +
-    `<td class="num">${fmtNum(c.up.bytes)}</td><td class="num">${fmtNum(c.down.bytes)}</td>` +
     `<td class="num">${fmtNum(c.up.queued)} / ${fmtNum(c.up.peak)}</td>` +
-    `<td class="num">${fmtNum(c.down.queued)} / ${fmtNum(c.down.peak)}</td>` +
+    `<td class="num">${fmtNum(c.down.bytes)}</td>` +
     `<td class="num">${c.up_delay_ms} / ${c.down_delay_ms}</td>` +
-    `<td>${esc(receipt)}</td><td>${fmtTime(c.started_at)}</td><td>${fmtTime(c.ended_at)}</td>` +
-    `<td class="err">${esc(c.error || "")}</td></tr>`;
+    `<td class="mono">${esc(receipt)}</td><td>${fmtTime(c.started_at)}</td><td>${fmtTime(c.ended_at)}</td>` +
+    `<td class="err">${esc(c.error || "")}</td>` +
+    compareCell(c) + `</tr>`;
 }
 
 async function refresh() {
@@ -115,10 +238,35 @@ async function refresh() {
     const d = await r.json();
     $("activeCount").textContent = `(${d.active.length})`;
     $("activeWrap").innerHTML = d.active.length
-      ? `<table>${HEAD}${d.active.map(connRow).join("")}</table>` : `<div class="muted">无</div>`;
+      ? `<div style="overflow-x:auto"><table>${HEAD}${d.active.map(connRow).join("")}</table></div>`
+      : `<div class="muted">无</div>`;
     $("histWrap").innerHTML = d.history.length
-      ? `<table>${HEAD}${d.history.map(connRow).join("")}</table>` : `<div class="muted">无</div>`;
+      ? `<div style="overflow-x:auto"><table>${HEAD}${d.history.map(connRow).join("")}</table></div>`
+      : `<div class="muted">无</div>`;
   } catch (e) { /* 下次刷新重试 */ }
+}
+
+let pollTimer = null;
+
+async function pollConn(connId) {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (connId == null) return;
+  const tick = async () => {
+    try {
+      const d = await (await fetch(`/api/connections/${connId}`)).json();
+      if (!d || d.detail) return;
+      const cmp = d.compare || {};
+      $("upConn").innerHTML = `连接号 <b>#${connId}</b>：` + cmpPill(cmp) +
+        (cmp.reason ? ` <span class="err">${esc(cmp.reason)}</span>` : "") +
+        ` <span class="muted">（主端 ${fmtNum((cmp.main_down||{}).bytes)} B，候选 ${fmtNum((cmp.candidate_down||{}).bytes)} B；` +
+        `旁路已发 ${fmtNum((cmp.up||{}).bytes)} / 复制 ${fmtNum(cmp.copied)} B）</span>`;
+      if (cmp.status && cmp.status !== "pending" && cmp.status !== "disabled") {
+        clearInterval(pollTimer); pollTimer = null;
+      }
+    } catch (e) { /* 继续轮询 */ }
+  };
+  await tick();
+  pollTimer = setInterval(tick, 1000);
 }
 
 async function doUpload() {
@@ -127,6 +275,7 @@ async function doUpload() {
   $("upBtn").disabled = true;
   $("upStatus").textContent = `试传中：${f.name}（${fmtNum(f.size)} 字节）…`;
   $("upResult").style.display = "none";
+  $("upConn").textContent = "";
   try {
     const fd = new FormData();
     fd.append("file", f, f.name);
@@ -136,8 +285,9 @@ async function doUpload() {
     el.style.display = "block";
     el.textContent = JSON.stringify(d, null, 2);
     $("upStatus").innerHTML = d.ok
-      ? `<span class="ok">完成：${fmtNum(d.bytes_sent)} 字节，${d.duration_ms} ms，回执：${esc(d.receipt || "")}</span>`
-      : `<span class="err">失败：${esc(d.error || ("HTTP " + r.status))}</span>`;
+      ? `<span class="ok">主链路完成：${fmtNum(d.bytes_sent)} 字节，${d.duration_ms} ms；连接号 #${d.conn_id ?? "?"}；旁路仍在后台比对</span>`
+      : `<span class="err">主链路失败：${esc(d.error || ("HTTP " + r.status))}</span>`;
+    if (d.conn_id != null) pollConn(d.conn_id);
   } catch (e) {
     $("upStatus").innerHTML = `<span class="err">请求失败：${esc(e.message)}</span>`;
   } finally {
@@ -154,7 +304,9 @@ async function clearHistory() {
 $("saveBtn").onclick = saveConfig;
 $("upBtn").onclick = doUpload;
 $("clearBtn").onclick = clearHistory;
+$("cApplyBtn").onclick = applyCandidate;
 loadConfig();
+loadCandidate();
 refresh();
 setInterval(refresh, 1000);
 </script>
